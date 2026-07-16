@@ -32,11 +32,22 @@ function Start-SecurePulseM365Setup {
         Write-Host "(This is a one-time install and may take a few minutes.)" -ForegroundColor Yellow
 
         try {
-            Install-Module Microsoft.Graph -Scope CurrentUser -Force -ErrorAction Stop
+            # Ensure PSGallery is trusted first — avoids an interactive
+            # "untrusted repository" confirmation prompt that could
+            # otherwise hang when this script runs via irm | iex.
+            $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+            if ($psGallery -and $psGallery.InstallationPolicy -ne "Trusted") {
+                Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+            }
+
+            Install-Module Microsoft.Graph -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
         } catch {
             Write-Host ""
             Write-Host "ERROR: Failed to install Microsoft.Graph module." -ForegroundColor Red
             Write-Host "Details: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "Try running this manually first, then re-run this command:" -ForegroundColor Yellow
+            Write-Host "  Install-Module Microsoft.Graph -Scope CurrentUser -Force" -ForegroundColor Cyan
             return
         }
     }
