@@ -161,7 +161,8 @@ function Start-SecurePulseM365Setup {
     # STEP 6 — Client secret: reuse if valid and known, revoke and
     # recreate otherwise
     # ═══════════════════════════════════════════════════════
-    $existingSecrets = Get-MgApplicationPassword -ApplicationId $app.Id -ErrorAction SilentlyContinue
+    $currentApp      = Get-MgApplication -ApplicationId $app.Id
+    $existingSecrets = $currentApp.PasswordCredentials
     $validSecret     = $existingSecrets | Where-Object { $_.EndDateTime -gt (Get-Date) } | Select-Object -First 1
     $reenteredSecret = $null
 
