@@ -1,60 +1,232 @@
-# ═══════════════════════════════════════════════════════
-# STEP 0 — PowerShell version check (hard stop, cannot auto-fix)
-# ═══════════════════════════════════════════════════════
-if ($PSVersionTable.PSVersion.Major -lt 7 -or 
-    ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 4)) {
-    Write-Host ""
-    Write-Host "ERROR: PowerShell 7.4 or higher is required." -ForegroundColor Red
-    Write-Host "You are running $($PSVersionTable.PSVersion)." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Install PowerShell 7.4+ first:" -ForegroundColor Yellow
-    Write-Host "  Windows: winget install --id Microsoft.PowerShell --source winget"
-    Write-Host "  macOS:   brew install powershell/tap/powershell"
-    Write-Host ""
-    Write-Host "Then re-run this command in a NEW PowerShell 7 session." -ForegroundColor Yellow
-    exit 1
-}
+# =========================================================
+# Secure Pulse — Microsoft 365 Scripted Setup
+# This script creates (or reuses) an Entra ID app registration with
+# read-only Graph permissions for Secure Pulse's M365 security scans.
+#
+# Run this in PowerShell 7.4+ as a Global Administrator.
+# =========================================================
 
-Write-Host "PowerShell version OK: $($PSVersionTable.PSVersion)" -ForegroundColor Green
+function Start-SecurePulseM365Setup {
 
-# ═══════════════════════════════════════════════════════
-# STEP 1 — Microsoft.Graph module: auto-install if missing, then verify
-# ═══════════════════════════════════════════════════════
-$graphModule = Get-Module -ListAvailable -Name Microsoft.Graph
+    # ═══════════════════════════════════════════════════════
+    # STEP 0 — PowerShell version check (hard stop, cannot auto-fix)
+    # ═══════════════════════════════════════════════════════
+    if ($PSVersionTable.PSVersion.Major -lt 7 -or
+        ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 4)) {
+        Write-Host ""
+        Write-Host "=====================================================" -ForegroundColor Red
+        Write-Host "  PowerShell 7.4+ REQUIRED" -ForegroundColor Red
+        Write-Host "=====================================================" -ForegroundColor Red
+        Write-Host "You are running PowerShell $($PSVersionTable.PSVersion)" -ForegroundColor Yellow
+        Write-Host "(Windows PowerShell 5.1, the version built into Windows)." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "This is not a bug — Prowler's Microsoft 365 scanner" -ForegroundColor Yellow
+        Write-Host "requires PowerShell 7.4 or higher to function correctly." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "Install it, then run this command again in a NEW" -ForegroundColor Yellow
+        Write-Host "PowerShell 7 window (search 'pwsh' in the Start Menu" -ForegroundColor Yellow
+        Write-Host "after installing, not 'PowerShell'):" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Windows: winget install --id Microsoft.PowerShell --source winget" -ForegroundColor Cyan
+        Write-Host "  macOS:   brew install powershell/tap/powershell" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "This window will remain open — nothing else has changed." -ForegroundColor Green
+        return
+    }
 
-if (-not $graphModule) {
+    Write-Host "PowerShell version OK: $($PSVersionTable.PSVersion)" -ForegroundColor Green
+
+    # ═══════════════════════════════════════════════════════
+    # STEP 1 — Microsoft.Graph module: auto-install if missing, then verify
+    # ═══════════════════════════════════════════════════════
+    $graphModule = Get-Module -ListAvailable -Name Microsoft.Graph
+
+    if (-not $graphModule) {
+        Write-Host ""
+        Write-Host "Microsoft.Graph module not found — installing now..." -ForegroundColor Yellow
+        Write-Host "(This is a one-time install and may take a few minutes.)" -ForegroundColor Yellow
+
+        try {
+            Install-Module Microsoft.Graph -Scope CurrentUser -Force -ErrorAction Stop
+        } catch {
+            Write-Host ""
+            Write-Host "ERROR: Failed to install Microsoft.Graph module." -ForegroundColor Red
+            Write-Host "Details: $($_.Exception.Message)" -ForegroundColor Red
+            return
+        }
+    }
+
+    # Verify it actually installed correctly, regardless of whether it
+    # was already present or just installed above
+    $graphModule = Get-Module -ListAvailable -Name Microsoft.Graph |
+        Sort-Object Version -Descending | Select-Object -First 1
+
+    if (-not $graphModule) {
+        Write-Host ""
+        Write-Host "ERROR: Microsoft.Graph module still not found after install attempt." -ForegroundColor Red
+        Write-Host "Try running manually: Install-Module Microsoft.Graph -Scope CurrentUser -Force" -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "Microsoft.Graph module OK: version $($graphModule.Version)" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Microsoft.Graph module not found — installing now..." -ForegroundColor Yellow
-    Write-Host "(This is a one-time install and may take a few minutes.)" -ForegroundColor Yellow
 
+    # ═══════════════════════════════════════════════════════
+    # STEP 2 — Connect to Microsoft Graph
+    # ═══════════════════════════════════════════════════════
     try {
-        Install-Module Microsoft.Graph -Scope CurrentUser -Force -ErrorAction Stop
+        Connect-MgGraph -Scopes "Application.ReadWrite.All","AppRoleAssignment.ReadWrite.All" -ErrorAction Stop
     } catch {
         Write-Host ""
-        Write-Host "ERROR: Failed to install Microsoft.Graph module." -ForegroundColor Red
+        Write-Host "ERROR: Failed to connect to Microsoft Graph." -ForegroundColor Red
         Write-Host "Details: $($_.Exception.Message)" -ForegroundColor Red
-        exit 1
+        return
     }
-}
 
-# Verify it actually installed correctly, regardless of whether it 
-# was already present or just installed above
-$graphModule = Get-Module -ListAvailable -Name Microsoft.Graph | 
-    Sort-Object Version -Descending | Select-Object -First 1
+    $appDisplayName = "Secure Pulse M365 Scanner"
+    $graphAppId     = "00000003-0000-0000-c000-000000000000"
 
-if (-not $graphModule) {
+    $permissions = @(
+        "AuditLog.Read.All",
+        "Directory.Read.All",
+        "Policy.Read.All",
+        "SharePointTenantSettings.Read.All"
+    )
+
+    # ═══════════════════════════════════════════════════════
+    # STEP 3 — Idempotent app-registration check (avoid duplicates)
+    # ═══════════════════════════════════════════════════════
+    $existingApp = Get-MgApplication -Filter "displayName eq '$appDisplayName'"
+
+    if ($existingApp) {
+        Write-Host "Found existing app registration: $appDisplayName" -ForegroundColor Cyan
+        $app = $existingApp
+        $sp  = Get-MgServicePrincipal -Filter "appId eq '$($app.AppId)'"
+    } else {
+        Write-Host "Creating new app registration: $appDisplayName" -ForegroundColor Cyan
+        $app = New-MgApplication -DisplayName $appDisplayName
+        $sp  = New-MgServicePrincipal -AppId $app.AppId
+        Start-Sleep -Seconds 5   # brief pause for the service principal to be queryable
+    }
+
+    # ═══════════════════════════════════════════════════════
+    # STEP 4 — Set required Graph permissions (RequiredResourceAccess)
+    # ═══════════════════════════════════════════════════════
+    $graphSp = Get-MgServicePrincipal -Filter "appId eq '$graphAppId'"
+
+    if (-not $graphSp) {
+        Write-Host ""
+        Write-Host "ERROR: Could not find the Microsoft Graph service principal in this tenant." -ForegroundColor Red
+        return
+    }
+
+    $resourceAccess = foreach ($permName in $permissions) {
+        $role = $graphSp.AppRoles | Where-Object { $_.Value -eq $permName }
+        if (-not $role) {
+            Write-Host "ERROR: Could not find Graph permission '$permName' — check the permission name is correct." -ForegroundColor Red
+            return
+        }
+        @{ Id = $role.Id; Type = "Role" }
+    }
+
+    Update-MgApplication -ApplicationId $app.Id -RequiredResourceAccess @(
+        @{ ResourceAppId = $graphAppId; ResourceAccess = $resourceAccess }
+    )
+
+    $verifyApp = Get-MgApplication -ApplicationId $app.Id
+    if ($verifyApp.RequiredResourceAccess.Count -eq 0) {
+        Write-Host "ERROR: Failed to set required permissions on the app registration." -ForegroundColor Red
+        Write-Host "Check that your account has Application.ReadWrite.All permission and try again." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "Required permissions configured." -ForegroundColor Green
+
+    # ═══════════════════════════════════════════════════════
+    # STEP 5 — Admin consent (skip if already granted)
+    # ═══════════════════════════════════════════════════════
+    $existingGrants = Get-MgServicePrincipalAppRoleAssignedTo -ServicePrincipalId $sp.Id -ErrorAction SilentlyContinue
+
+    if ($existingGrants -and $existingGrants.Count -gt 0) {
+        Write-Host "Admin consent already granted for this app." -ForegroundColor Green
+        Write-Host "Skipping consent step." -ForegroundColor Green
+    } else {
+        Write-Host ""
+        Write-Host "Waiting for permissions to propagate..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 15
+
+        $tenantId   = (Get-MgContext).TenantId
+        $consentUrl = "https://login.microsoftonline.com/$tenantId/adminconsent?client_id=$($app.AppId)"
+
+        Write-Host ""
+        Write-Host "Opening browser to grant admin consent..." -ForegroundColor Yellow
+        Start-Process $consentUrl
+
+        Write-Host ""
+        Write-Host "Click 'Accept' on the permissions screen." -ForegroundColor Yellow
+        Write-Host "You may see a sign-in error page afterward (AADSTS500113)" -ForegroundColor Yellow
+        Write-Host "— this is expected and can be safely ignored. Consent has" -ForegroundColor Yellow
+        Write-Host "already been granted at that point. Simply close that tab." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "Once you've clicked Accept, return here and press Enter to continue."
+        Read-Host
+    }
+
+    # ═══════════════════════════════════════════════════════
+    # STEP 6 — Client secret: reuse if valid and known, revoke and
+    # recreate otherwise
+    # ═══════════════════════════════════════════════════════
+    $existingSecrets = Get-MgApplicationPassword -ApplicationId $app.Id -ErrorAction SilentlyContinue
+    $validSecret     = $existingSecrets | Where-Object { $_.EndDateTime -gt (Get-Date) } | Select-Object -First 1
+    $reenteredSecret = $null
+
+    if ($validSecret) {
+        Write-Host ""
+        Write-Host "An existing valid client secret was found." -ForegroundColor Cyan
+        Write-Host "Note: the secret VALUE cannot be retrieved again after creation." -ForegroundColor Yellow
+        $hasSecret = Read-Host "Do you still have the existing secret value saved? (yes/no)"
+
+        if ($hasSecret -eq "yes") {
+            $reenteredSecret = Read-Host "Please re-enter your existing Client Secret value"
+        } else {
+            Write-Host "Revoking the old, now-unrecoverable secret..." -ForegroundColor Yellow
+            Remove-MgApplicationPassword -ApplicationId $app.Id -KeyId $validSecret.KeyId
+            Write-Host "Old secret revoked." -ForegroundColor Green
+        }
+    }
+
+    if (-not $reenteredSecret) {
+        $secret = Add-MgApplicationPassword -ApplicationId $app.Id -PasswordCredential @{
+            displayName = "Secure Pulse scan credential"
+            endDateTime = (Get-Date).AddMonths(6)
+        }
+        $secretValue = $secret.SecretText
+    } else {
+        $secretValue = $reenteredSecret
+    }
+
+    # ═══════════════════════════════════════════════════════
+    # STEP 7 — Print credentials with save-now warnings
+    # ═══════════════════════════════════════════════════════
     Write-Host ""
-    Write-Host "ERROR: Microsoft.Graph module still not found after install attempt." -ForegroundColor Red
-    Write-Host "Try running manually: Install-Module Microsoft.Graph -Scope CurrentUser -Force" -ForegroundColor Yellow
-    exit 1
+    Write-Host "=====================================================" -ForegroundColor Yellow
+    Write-Host "  IMPORTANT — SAVE THESE VALUES NOW" -ForegroundColor Yellow
+    Write-Host "=====================================================" -ForegroundColor Yellow
+    Write-Host "The Client Secret below cannot be retrieved again once" -ForegroundColor Yellow
+    Write-Host "this window is closed. Copy all three values into a" -ForegroundColor Yellow
+    Write-Host "password manager or the Secure Pulse app before closing" -ForegroundColor Yellow
+    Write-Host "this terminal." -ForegroundColor Yellow
+    Write-Host "=====================================================" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Setup completed successfully. Copy the values below into Secure Pulse:" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Tenant ID:     $((Get-MgContext).TenantId)"
+    Write-Host "Client ID:     $($app.AppId)"
+    Write-Host "Client Secret: $secretValue"
+    Write-Host ""
+    Write-Host "=====================================================" -ForegroundColor Yellow
+    Write-Host "  Reminder: save these values now before continuing." -ForegroundColor Yellow
+    Write-Host "=====================================================" -ForegroundColor Yellow
 }
 
-Write-Host "Microsoft.Graph module OK: version $($graphModule.Version)" -ForegroundColor Green
-Write-Host ""
-
-# ═══════════════════════════════════════════════════════
-# Everything below is the existing corrected setup logic —
-# idempotent app-registration check, permission assignment via
-# RequiredResourceAccess, browser-based admin consent, and secret
-# rotation handling exactly as already built and tested.
-# ═══════════════════════════════════════════════════════
+Start-SecurePulseM365Setup
