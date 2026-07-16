@@ -125,14 +125,28 @@ function Start-SecurePulseM365Setup {
         @{ Id = $role.Id; Type = "Role" }
     }
 
-    Update-MgApplication -ApplicationId $app.Id -RequiredResourceAccess @(
-        @{ ResourceAppId = $graphAppId; ResourceAccess = $resourceAccess }
-    )
+    try {
+        Update-MgApplication -ApplicationId $app.Id -RequiredResourceAccess @(
+            @{ ResourceAppId = $graphAppId; ResourceAccess = $resourceAccess }
+        ) -ErrorAction Stop
+    } catch {
+        Write-Host ""
+        Write-Host "ERROR: Failed to set required permissions on the app registration." -ForegroundColor Red
+        Write-Host "Details: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "This usually means:" -ForegroundColor Yellow
+        Write-Host "  - Your signed-in account does not have Global Administrator or" -ForegroundColor Yellow
+        Write-Host "    Application Administrator rights in this tenant, OR" -ForegroundColor Yellow
+        Write-Host "  - The Connect-MgGraph session above did not receive the" -ForegroundColor Yellow
+        Write-Host "    Application.ReadWrite.All scope (try closing this window," -ForegroundColor Yellow
+        Write-Host "    opening a new one, and running the command again so a fresh" -ForegroundColor Yellow
+        Write-Host "    sign-in prompt appears)." -ForegroundColor Yellow
+        return
+    }
 
     $verifyApp = Get-MgApplication -ApplicationId $app.Id
     if ($verifyApp.RequiredResourceAccess.Count -eq 0) {
-        Write-Host "ERROR: Failed to set required permissions on the app registration." -ForegroundColor Red
-        Write-Host "Check that your account has Application.ReadWrite.All permission and try again." -ForegroundColor Yellow
+        Write-Host "ERROR: Permissions did not save correctly — RequiredResourceAccess is still empty." -ForegroundColor Red
         return
     }
 
