@@ -9,32 +9,17 @@
 function Start-SecurePulseM365Setup {
 
     # ═══════════════════════════════════════════════════════
-    # STEP 0 — PowerShell version check (hard stop, cannot auto-fix)
+    # STEP 0 — PowerShell version (informational only)
     # ═══════════════════════════════════════════════════════
-    if ($PSVersionTable.PSVersion.Major -lt 7 -or
-        ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 4)) {
-        Write-Host ""
-        Write-Host "=====================================================" -ForegroundColor Red
-        Write-Host "  PowerShell 7.4+ REQUIRED" -ForegroundColor Red
-        Write-Host "=====================================================" -ForegroundColor Red
-        Write-Host "You are running PowerShell $($PSVersionTable.PSVersion)" -ForegroundColor Yellow
-        Write-Host "(Windows PowerShell 5.1, the version built into Windows)." -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "This is not a bug — Prowler's Microsoft 365 scanner" -ForegroundColor Yellow
-        Write-Host "requires PowerShell 7.4 or higher to function correctly." -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "Install it, then run this command again in a NEW" -ForegroundColor Yellow
-        Write-Host "PowerShell 7 window (search 'pwsh' in the Start Menu" -ForegroundColor Yellow
-        Write-Host "after installing, not 'PowerShell'):" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Windows: winget install --id Microsoft.PowerShell --source winget" -ForegroundColor Cyan
-        Write-Host "  macOS:   brew install powershell/tap/powershell" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "This window will remain open — nothing else has changed." -ForegroundColor Green
-        return
-    }
-
-    Write-Host "PowerShell version OK: $($PSVersionTable.PSVersion)" -ForegroundColor Green
+    # This script only uses Microsoft Graph SDK cmdlets to create an
+    # app registration and print credentials — it never runs Prowler
+    # itself. The Microsoft Graph SDK officially supports Windows
+    # PowerShell 5.1 as well as PowerShell 7+, so no version gate is
+    # needed here. (The actual M365 scan does require PowerShell
+    # 7.4+, but that runs entirely on Secure Pulse's own scan servers
+    # — not on this machine — so it has no bearing on this script.)
+    Write-Host "PowerShell version: $($PSVersionTable.PSVersion)" -ForegroundColor Cyan
+    Write-Host ""
 
     # ═══════════════════════════════════════════════════════
     # STEP 1 — Microsoft.Graph module: auto-install if missing, then verify
